@@ -1,0 +1,42 @@
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: cloud-application
+  labels:
+    app: cloud-application
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: cloud-application
+
+  # O mínimo garante alta disponibilidade; o máximo protege a conta e o banco
+  # (cada réplica abre o próprio pool de conexões contra o mesmo PostgreSQL).
+  minReplicas: 2
+  maxReplicas: 6
+
+  metrics:
+  # Percentual sobre o resources.requests.cpu do container — sem requests
+  # declarados o HPA fica com TARGETS <unknown> e nunca escala.
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70
+
+  behavior:
+    scaleUp:
+      # Reage rápido à carga: até 2 pods a cada 30s.
+      stabilizationWindowSeconds: 30
+      policies:
+      - type: Pods
+        value: 2
+        periodSeconds: 30
+    scaleDown:
+      # Desce devagar para não oscilar quando a carga tem picos curtos.
+      stabilizationWindowSeconds: 180
+      policies:
+      - type: Pods
+        value: 1
+        periodSeconds: 60

@@ -1,0 +1,75 @@
+name: Deploy
+
+on:
+  workflow_dispatch:
+
+env:
+  REGISTRY: container-registry.br-se1.magalu.cloud
+  IMAGE_NAME: cloud-application
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+
+    - uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+
+    - name: Instalar dependências
+      run: |
+        pip install poetry
+        poetry install --no-root
+
+    - name: Executar testes
+      run: poetry run pytest
+
+  build-and-deploy:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Login no Container Registry
+      run: |
+        docker login https://${{ env.REGISTRY }} \
+          -u ${{ secrets.MGC_REGISTRY_USER }} \
+          -p ${{ secrets.MGC_REGISTRY_PASSWORD }}
+
+    - name: Build e push da imagem
+      run: |
+        BASE=${{ env.REGISTRY }}/${{ secrets.MGC_REGISTRY_NAME }}/${{ env.IMAGE_NAME }}
+        docker build -t $BASE:${{ github.sha }} -t $BASE:latest .
+        docker push $BASE:${{ github.sha }}
+        docker push $BASE:latest
+
+    - name: Configurar kubectl
+      run: |
+        echo "${{ secrets.MGC_KUBECONFIG }}" > kubeconfig.yaml
+
+    - name: Criar Secret do registry
+      run: |
+        export KUBECONFIG=kubeconfig.yaml
+        kubectl create secret docker-registry registry-secret \
+          --docker-server=${{ env.REGISTRY }} \
+          --docker-username=${{ secrets.MGC_REGISTRY_USER }} \
+          --docker-password=${{ secrets.MGC_REGISTRY_PASSWORD }} \
+          --dry-run=client -o yaml | kubectl apply -f -
+
+    - name: Criar Secret do banco
+      run: |
+        export KUBECONFIG=kubeconfig.yaml
+        kubectl create secret generic db-secret \
+          --from-literal=url=${{ secrets.DATABASE_URL }} \
+          --dry-run=client -o yaml | kubectl apply -f -
+
+    - name: Deploy no Kubernetes
+      run: |
+        export KUBECONFIG=kubeconfig.yaml
+        export MGC_REGISTRY_NAME=${{ secrets.MGC_REGISTRY_NAME }}
+        export IMAGE_TAG=${{ github.sha }}
+        envsubst < k8s/app.yaml | kubectl apply -f -
+        kubectl apply -f k8s/hpa.yaml
+        kubectl apply -f k8s/servicemonitor.yaml
+        kubectl rollout status deployment/cloud-application
